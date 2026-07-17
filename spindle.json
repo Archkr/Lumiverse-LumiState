@@ -1,0 +1,13 @@
+{
+  "identifier": "lumi_state",
+  "version": "0.1.0",
+  "name": "LumiState",
+  "author": "Archkr",
+  "github": "https://github.com/Archkr/Lumiverse-LumiState",
+  "homepage": "https://github.com/Archkr/Lumiverse-LumiState",
+  "description": "A read-only shared scene bridge for LumiWorld, LumiWeather, and LumiMind.",
+  "permissions": ["chats"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "1.0.6"
+}
