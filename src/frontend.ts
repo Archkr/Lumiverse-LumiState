@@ -5,7 +5,9 @@ import type {
   LumiStateConditionClaimV1,
   LumiStateLocationClaimV1,
   LumiStateObjectClaimV1,
+  LumiStateProvenanceV1,
   LumiStateSourceStatus,
+  LumiStateSourceSummaryV1,
   LumiStateThreadClaimV1,
   LumiStateTimeClaimV1,
 } from "./protocol";
@@ -29,7 +31,7 @@ function safeActiveChat(ctx: SpindleFrontendContext): string | null {
 }
 
 function compactId(value: string | null): string {
-  if (!value) return "No active chat";
+  if (!value) return "No active conversation";
   return value.length <= 18 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
 }
 
@@ -40,98 +42,219 @@ function sourceName(extensionId: string): string {
   return extensionId;
 }
 
-function statusTone(status: LumiStateSourceStatus): string {
+function sourceCode(extensionId: string): string {
+  if (extensionId === "lumi_weather") return "WE";
+  if (extensionId === "agent_world") return "WO";
+  if (extensionId === "lumi_mind") return "MI";
+  return extensionId.slice(0, 2).toLocaleUpperCase();
+}
+
+function sourceClass(extensionId: string): string {
+  if (extensionId === "lumi_weather") return "weather";
+  if (extensionId === "agent_world") return "world";
+  if (extensionId === "lumi_mind") return "mind";
+  return "other";
+}
+
+function statusTone(status: LumiStateSourceStatus): "good" | "warn" | "bad" {
   if (status === "connected") return "good";
   if (status === "stale" || status === "unavailable" || status === "chat_mismatch") return "warn";
   return "bad";
 }
 
 function statusLabel(status: LumiStateSourceStatus): string {
-  return status.replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
-function freshnessTone(freshness: string): string {
+function freshnessTone(freshness: string): "good" | "warn" | "bad" {
   return freshness === "fresh" ? "good" : freshness === "stale" ? "warn" : "bad";
 }
 
+function freshnessLabel(freshness: string): string {
+  if (freshness === "fresh") return "Scene current";
+  if (freshness === "stale") return "Scene aging";
+  return "Scene offline";
+}
+
 function relativeTime(timestamp: number | null): string {
-  if (!timestamp) return "No update";
+  if (!timestamp) return "No update yet";
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (seconds < 10) return "Just now";
   if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  return `${hours}h ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  if (words.length === 1) return words[0]?.slice(0, 2).toLocaleUpperCase() ?? "?";
+  return `${words[0]?.[0] ?? ""}${words.at(-1)?.[0] ?? ""}`.toLocaleUpperCase();
 }
 
 function pill(text: string, tone = ""): HTMLSpanElement {
   return element("span", `ls-pill ${tone}`.trim(), text);
 }
 
-function card(source: string, title: string, body?: string, tags: string[] = []): HTMLDivElement {
-  const node = element("div", "ls-card");
-  node.appendChild(element("div", "ls-card-source", source));
-  node.appendChild(element("div", "ls-card-title", title));
-  if (body) node.appendChild(element("div", "ls-card-body", body));
-  if (tags.length) {
-    const row = element("div", "ls-card-tags");
-    for (const tag of tags) row.appendChild(element("span", "ls-tag", tag));
-    node.appendChild(row);
-  }
-  return node;
+function actionButton(label: string, onClick: () => void, className = ""): HTMLButtonElement {
+  const button = element("button", `ls-button ${className}`.trim(), label);
+  button.type = "button";
+  button.addEventListener("click", onClick);
+  return button;
 }
 
-function section(title: string, count: number): { root: HTMLElement; grid: HTMLElement } {
-  const root = element("section", "ls-section");
-  const head = element("div", "ls-section-head");
-  head.append(element("h2", "ls-section-title", title), element("span", "ls-section-count", String(count)));
-  const grid = element("div", "ls-grid");
-  root.append(head, grid);
-  return { root, grid };
+function provenanceFooter(provenance: LumiStateProvenanceV1): HTMLDivElement {
+  const footer = element("div", "ls-provenance");
+  footer.append(
+    element("span", `ls-source-dot ${sourceClass(provenance.extensionId)}`),
+    element("span", "ls-provenance-name", sourceName(provenance.extensionId)),
+    element("span", "ls-provenance-time", `Observed ${relativeTime(provenance.observedAt)}`),
+  );
+  return footer;
 }
 
-function formatTimeClaim(claim: LumiStateTimeClaimV1): { title: string; body: string; tags: string[] } {
+function sectionHeading(kicker: string, title: string, count: number, description?: string): HTMLDivElement {
+  const heading = element("div", "ls-section-heading");
+  const copy = element("div", "ls-section-copy");
+  copy.append(element("div", "ls-kicker", kicker), element("h2", "ls-section-title", title));
+  if (description) copy.appendChild(element("p", "ls-section-description", description));
+  heading.append(copy, element("span", "ls-count", String(count)));
+  return heading;
+}
+
+function formatTimeClaim(claim: LumiStateTimeClaimV1): { title: string; detail: string; tags: string[] } {
   if (claim.clock === "calendar") {
     return {
       title: [claim.date, claim.time].filter(Boolean).join(" · ") || "Calendar time unavailable",
-      body: "Visible story date and time",
-      tags: ["Calendar clock"],
+      detail: claim.timezone ? `Visible story time · ${claim.timezone}` : "Visible story date and time",
+      tags: ["Calendar"],
     };
   }
   const day = claim.day == null ? "Day unknown" : `Day ${claim.day}`;
   const hour = claim.hour == null ? "Hour unknown" : `${String(claim.hour).padStart(2, "0")}:00`;
-  return { title: `${day} · ${hour}`, body: "LumiWorld simulation clock", tags: [claim.running ? "Running" : "Paused"] };
+  return {
+    title: `${day} · ${hour}`,
+    detail: "LumiWorld simulation clock",
+    tags: [claim.running ? "Running" : "Paused"],
+  };
+}
+
+function subjectLabel(claim: LumiStateLocationClaimV1 | LumiStateTimeClaimV1 | LumiStateConditionClaimV1): string {
+  return claim.subject.kind === "scene" ? "Scene-wide" : `${claim.subject.actor.kind} scoped`;
+}
+
+function humanize(value: string): string {
+  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
+}
+
+function formatAttribute(value: string | number | boolean | null): string {
+  if (value === null) return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
 }
 
 function locationCard(claim: LumiStateLocationClaimV1): HTMLElement {
-  return card(sourceName(claim.provenance.extensionId), claim.label, claim.subject.kind === "scene" ? "Visible scene location" : "Actor-scoped location");
+  const node = element("article", "ls-observation location");
+  const top = element("div", "ls-observation-top");
+  top.append(element("span", "ls-observation-symbol", "LOC"), pill(subjectLabel(claim)));
+  node.append(top, element("h3", "ls-observation-title", claim.label));
+  node.appendChild(element("p", "ls-observation-copy", claim.subject.kind === "scene" ? "The visible setting shared by scene publishers." : "A location attached to one actor."));
+  node.appendChild(provenanceFooter(claim.provenance));
+  return node;
 }
 
 function timeCard(claim: LumiStateTimeClaimV1): HTMLElement {
   const formatted = formatTimeClaim(claim);
-  return card(sourceName(claim.provenance.extensionId), formatted.title, formatted.body, formatted.tags);
+  const node = element("article", "ls-observation time");
+  const top = element("div", "ls-observation-top");
+  top.append(element("span", "ls-observation-symbol", "TIME"), pill(subjectLabel(claim)));
+  node.append(top, element("h3", "ls-observation-title", formatted.title), element("p", "ls-observation-copy", formatted.detail));
+  const tags = element("div", "ls-tags");
+  for (const tag of formatted.tags) tags.appendChild(element("span", "ls-tag", tag));
+  node.append(tags, provenanceFooter(claim.provenance));
+  return node;
 }
 
 function conditionCard(claim: LumiStateConditionClaimV1): HTMLElement {
-  const summary = typeof claim.attributes.summary === "string" ? claim.attributes.summary : "";
-  const tags = [claim.kind];
-  if (claim.attributes.temperature != null) tags.push(String(claim.attributes.temperature));
-  if (claim.attributes.wind != null) tags.push(String(claim.attributes.wind));
-  return card(sourceName(claim.provenance.extensionId), claim.label, summary, tags);
+  const node = element("article", "ls-observation condition");
+  const top = element("div", "ls-observation-top");
+  top.append(element("span", "ls-observation-symbol", "ENV"), pill(humanize(claim.kind)));
+  node.append(top, element("h3", "ls-observation-title", claim.label));
+  const summary = typeof claim.attributes.summary === "string" ? claim.attributes.summary : "Shared environmental condition";
+  node.appendChild(element("p", "ls-observation-copy", summary));
+  const attributes = Object.entries(claim.attributes).filter(([key]) => key !== "summary").slice(0, 5);
+  if (attributes.length) {
+    const list = element("dl", "ls-attributes");
+    for (const [key, value] of attributes) {
+      const item = element("div", "ls-attribute");
+      item.append(element("dt", "", humanize(key)), element("dd", "", formatAttribute(value)));
+      list.appendChild(item);
+    }
+    node.appendChild(list);
+  }
+  node.appendChild(provenanceFooter(claim.provenance));
+  return node;
 }
 
 function castCard(claim: LumiStateCastClaimV1): HTMLElement {
-  const body = [claim.publicStance, claim.aliases.length ? `Also known as ${claim.aliases.join(", ")}` : ""].filter(Boolean).join(" · ");
-  return card(sourceName(claim.provenance.extensionId), claim.name, body, [claim.actor.kind, claim.present ? "Present" : "Not present", claim.confirmed ? "Confirmed" : "Unconfirmed"]);
+  const node = element("article", `ls-cast-card${claim.present ? " present" : ""}`);
+  const identity = element("div", "ls-cast-identity");
+  const avatar = element("div", "ls-avatar", initials(claim.name));
+  if (claim.present) avatar.appendChild(element("span", "ls-presence-dot"));
+  const copy = element("div", "ls-cast-copy");
+  copy.append(element("h3", "ls-cast-name", claim.name), element("div", "ls-cast-kind", humanize(claim.actor.kind)));
+  identity.append(avatar, copy);
+  const state = element("div", "ls-cast-state");
+  state.append(pill(claim.present ? "Present" : "Off scene", claim.present ? "good" : ""));
+  if (!claim.confirmed) state.appendChild(pill("Unconfirmed", "warn"));
+  node.append(identity, state);
+  if (claim.publicStance) node.appendChild(element("p", "ls-stance", claim.publicStance));
+  if (claim.aliases.length) node.appendChild(element("p", "ls-aliases", `Also known as ${claim.aliases.join(", ")}`));
+  node.appendChild(provenanceFooter(claim.provenance));
+  return node;
 }
 
 function objectCard(claim: LumiStateObjectClaimV1): HTMLElement {
-  return card(sourceName(claim.provenance.extensionId), claim.name, claim.state, [claim.object.kind]);
+  const node = element("article", "ls-inventory-card");
+  const marker = element("span", "ls-inventory-marker", initials(claim.name));
+  const copy = element("div", "ls-inventory-copy");
+  copy.append(element("h3", "ls-inventory-title", claim.name));
+  if (claim.state) copy.appendChild(element("p", "ls-inventory-description", claim.state));
+  const type = pill(humanize(claim.object.kind));
+  node.append(marker, copy, type, provenanceFooter(claim.provenance));
+  return node;
 }
 
 function threadCard(claim: LumiStateThreadClaimV1): HTMLElement {
-  return card(sourceName(claim.provenance.extensionId), claim.label, claim.summary, [claim.status]);
+  const node = element("article", `ls-thread-card ${claim.status}`);
+  const top = element("div", "ls-thread-top");
+  top.append(element("h3", "ls-thread-title", claim.label), pill(humanize(claim.status), claim.status === "active" ? "good" : claim.status === "abandoned" ? "bad" : ""));
+  node.appendChild(top);
+  if (claim.summary) node.appendChild(element("p", "ls-thread-summary", claim.summary));
+  node.appendChild(provenanceFooter(claim.provenance));
+  return node;
+}
+
+function sourceCard(source: LumiStateSourceSummaryV1): HTMLDetailsElement {
+  const tone = statusTone(source.status);
+  const node = element("details", `ls-source ${tone} ${sourceClass(source.extensionId)}`);
+  const summary = element("summary", "ls-source-summary");
+  const mark = element("span", "ls-source-mark", sourceCode(source.extensionId));
+  const copy = element("span", "ls-source-copy");
+  copy.append(element("strong", "ls-source-name", source.label), element("span", "ls-source-age", relativeTime(source.updatedAt)));
+  summary.append(mark, copy, pill(statusLabel(source.status), tone), element("span", "ls-source-chevron", "+"));
+  const details = element("div", "ls-source-details");
+  const revision = source.revision == null ? "No revision received" : `Revision ${source.revision}`;
+  details.append(
+    element("div", "ls-source-endpoint", source.endpoint),
+    element("div", "ls-source-meta", `${revision} · ${source.freshness ? humanize(source.freshness) : "No freshness signal"}`),
+  );
+  if (source.error) details.appendChild(element("div", "ls-source-error", source.error));
+  node.append(summary, details);
+  return node;
 }
 
 function diagnostics(state: LumiStateFrontendState, ctx: SpindleFrontendContext): Record<string, unknown> {
@@ -227,120 +350,234 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     send({ type: "refresh", chatId: safeActiveChat(ctx) });
   }
 
-  function render(): void {
-    const shell = element("div", "ls-shell");
-    const head = element("div", "ls-head");
-    const heading = element("div");
-    heading.append(
-      element("div", "ls-kicker", "Shared scene bridge"),
-      element("h1", "ls-title", "LumiState"),
-      element("div", "ls-subtitle", "One validated, source-aware view of your active scene."),
-    );
-    const actions = element("div", "ls-actions");
-    const refresh = element("button", "ls-button", "Refresh");
-    refresh.type = "button";
-    refresh.addEventListener("click", syncContext);
-    const copy = element("button", "ls-button", "Copy diagnostics");
-    copy.type = "button";
-    copy.disabled = !current;
-    copy.addEventListener("click", () => {
+  function renderHeader(): HTMLElement {
+    const header = element("header", "ls-header");
+    const mark = element("div", "ls-brand-mark");
+    mark.innerHTML = STATE_ICON;
+    const identity = element("div", "ls-brand-copy");
+    identity.append(element("div", "ls-eyebrow", "LumiState"), element("div", "ls-brand-title", "Scene Inspector"));
+    identity.appendChild(element("div", "ls-brand-subtitle", "Live context, reconciled"));
+    const actions = element("div", "ls-header-actions");
+    const freshness = current?.snapshot.freshness ?? "unavailable";
+    const hasChat = Boolean(current?.snapshot.chatId);
+    actions.appendChild(pill(hasChat ? freshnessLabel(freshness) : current ? "Awaiting chat" : "Connecting", hasChat ? freshnessTone(freshness) : ""));
+    actions.appendChild(actionButton("Refresh", syncContext, "ls-button-quiet"));
+    const copy = actionButton("Diagnostics", () => {
       if (!current) return;
+      copy.disabled = true;
       void copyText(JSON.stringify(diagnostics(current, ctx), null, 2)).then(() => {
         copy.textContent = "Copied";
-        setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 1800);
       }).catch(() => {
         copy.textContent = "Copy failed";
-        setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 1800);
+      }).finally(() => {
+        window.setTimeout(() => {
+          copy.textContent = "Diagnostics";
+          copy.disabled = false;
+        }, 1800);
       });
-    });
-    actions.append(refresh, copy);
-    head.append(heading, actions);
-    shell.appendChild(head);
+    }, "ls-button-quiet");
+    copy.setAttribute("aria-label", "Copy privacy-safe diagnostics");
+    copy.title = "Copy privacy-safe diagnostics";
+    copy.disabled = !current;
+    actions.appendChild(copy);
+    header.append(mark, identity, actions);
+    return header;
+  }
 
-    if (errorMessage) {
-      const alert = element("div", "ls-alert error");
-      alert.append(element("div", "ls-alert-title", "Refresh problem"), element("div", "ls-alert-body", errorMessage));
-      shell.appendChild(alert);
+  function renderNotice(title: string, body: string, tone: "warning" | "danger"): HTMLElement {
+    const notice = element("div", `ls-notice ${tone}`);
+    notice.setAttribute("role", "status");
+    notice.append(element("span", "ls-notice-marker", tone === "danger" ? "!" : "≠"));
+    const copy = element("div", "ls-notice-copy");
+    copy.append(element("strong", "ls-notice-title", title), element("p", "ls-notice-body", body));
+    notice.appendChild(copy);
+    return notice;
+  }
+
+  function renderSceneStage(state: LumiStateFrontendState): HTMLElement {
+    const snapshot = state.snapshot;
+    const location = snapshot.state.locations.find((claim) => claim.subject.kind === "scene") ?? snapshot.state.locations[0];
+    const time = snapshot.state.times.find((claim) => claim.subject.kind === "scene") ?? snapshot.state.times[0];
+    const condition = snapshot.state.conditions.find((claim) => claim.subject.kind === "scene") ?? snapshot.state.conditions[0];
+    const timeReading = time ? formatTimeClaim(time) : null;
+    const connected = snapshot.sources.filter((source) => source.status === "connected" || source.status === "stale").length;
+    const present = snapshot.state.cast.filter((claim) => claim.present).length;
+    const stage = element("section", `ls-stage ${freshnessTone(snapshot.freshness)}`);
+    const ambient = element("div", "ls-stage-ambient");
+    ambient.setAttribute("aria-hidden", "true");
+    const content = element("div", "ls-stage-content");
+    content.appendChild(element("div", "ls-kicker", "Current scene"));
+    content.appendChild(element("h1", "ls-stage-title", location?.label ?? "Scene signals are assembling"));
+    const reading = [timeReading?.title, condition?.label].filter(Boolean).join("  ·  ");
+    content.appendChild(element("p", "ls-stage-reading", reading || "Publishers are connected, but no shared claims have arrived yet."));
+    const sourceRow = element("div", "ls-stage-sources");
+    const extensionIds = new Set<string>();
+    for (const claim of [location, time, condition]) {
+      if (!claim || extensionIds.has(claim.provenance.extensionId)) continue;
+      extensionIds.add(claim.provenance.extensionId);
+      const source = element("span", "ls-stage-source");
+      source.append(element("span", `ls-source-dot ${sourceClass(claim.provenance.extensionId)}`), element("span", "", sourceName(claim.provenance.extensionId)));
+      sourceRow.appendChild(source);
+    }
+    if (sourceRow.childElementCount) content.appendChild(sourceRow);
+    const metrics = element("div", "ls-stage-metrics");
+    for (const [value, label] of [
+      [String(connected), "Signals"],
+      [String(present), "Present"],
+      [String(snapshot.conflicts.length), "Conflicts"],
+    ]) {
+      const metric = element("div", "ls-stage-metric");
+      metric.append(element("strong", "", value), element("span", "", label));
+      metrics.appendChild(metric);
+    }
+    const footer = element("div", "ls-stage-footer");
+    footer.append(
+      element("span", "ls-chat-label", "Active conversation"),
+      element("code", "ls-chat-id", compactId(snapshot.chatId)),
+      element("span", "ls-stage-updated", `Updated ${relativeTime(snapshot.updatedAt)} · revision ${snapshot.revision}`),
+    );
+    stage.append(ambient, content, metrics, footer);
+    return stage;
+  }
+
+  function renderSignalPath(state: LumiStateFrontendState): HTMLElement {
+    const snapshot = state.snapshot;
+    const section = element("section", "ls-section");
+    const active = snapshot.sources.filter((source) => source.status === "connected" || source.status === "stale").length;
+    section.appendChild(sectionHeading("Source health", "Signal path", active, "Each publisher remains authoritative for its own scene data."));
+    const grid = element("div", "ls-source-grid");
+    for (const source of snapshot.sources) grid.appendChild(sourceCard(source));
+    section.appendChild(grid);
+    return section;
+  }
+
+  function renderNoChat(state: LumiStateFrontendState): HTMLElement {
+    const empty = element("section", "ls-empty-state");
+    const visual = element("div", "ls-empty-visual");
+    visual.append(element("span"), element("span"), element("span"));
+    empty.append(visual, element("div", "ls-kicker", "Waiting at the threshold"), element("h1", "ls-empty-title", "Open a conversation"));
+    empty.appendChild(element("p", "ls-empty-copy", "Scene Inspector follows the active chat and never substitutes context from the conversation you viewed last."));
+    const note = element("div", "ls-empty-note");
+    note.append(element("span", "ls-source-dot weather"), element("span", "", "Your source connections remain visible below."));
+    empty.appendChild(note);
+    const wrapper = element("div", "ls-no-chat");
+    wrapper.append(empty, renderSignalPath(state));
+    return wrapper;
+  }
+
+  function renderClaims(state: LumiStateFrontendState, shell: HTMLElement): void {
+    const snapshot = state.snapshot;
+    if (snapshot.state.cast.length) {
+      const section = element("section", "ls-section");
+      const present = snapshot.state.cast.filter((claim) => claim.present).length;
+      section.appendChild(sectionHeading("Shared identities", "Cast in view", snapshot.state.cast.length, `${present} currently marked present.`));
+      const grid = element("div", "ls-cast-grid");
+      for (const claim of snapshot.state.cast) grid.appendChild(castCard(claim));
+      section.appendChild(grid);
+      shell.appendChild(section);
     }
 
+    const readingCount = snapshot.state.locations.length + snapshot.state.times.length + snapshot.state.conditions.length;
+    if (readingCount) {
+      const section = element("section", "ls-section");
+      section.appendChild(sectionHeading("Published claims", "Scene readings", readingCount, "Source-aware observations, shown without silently resolving disagreement."));
+      const grid = element("div", "ls-observation-grid");
+      for (const claim of snapshot.state.locations) grid.appendChild(locationCard(claim));
+      for (const claim of snapshot.state.times) grid.appendChild(timeCard(claim));
+      for (const claim of snapshot.state.conditions) grid.appendChild(conditionCard(claim));
+      section.appendChild(grid);
+      shell.appendChild(section);
+    }
+
+    if (snapshot.state.threads.length) {
+      const section = element("section", "ls-section");
+      section.appendChild(sectionHeading("Narrative continuity", "Active threads", snapshot.state.threads.length));
+      const grid = element("div", "ls-thread-grid");
+      for (const claim of snapshot.state.threads) grid.appendChild(threadCard(claim));
+      section.appendChild(grid);
+      shell.appendChild(section);
+    }
+
+    if (snapshot.state.objects.length) {
+      const section = element("section", "ls-section");
+      section.appendChild(sectionHeading("World state", "Objects in context", snapshot.state.objects.length));
+      const grid = element("div", "ls-inventory-grid");
+      for (const claim of snapshot.state.objects) grid.appendChild(objectCard(claim));
+      section.appendChild(grid);
+      shell.appendChild(section);
+    }
+  }
+
+  function render(): void {
+    const shell = element("div", "ls-shell");
+    shell.appendChild(renderHeader());
+
+    if (errorMessage) shell.appendChild(renderNotice("Refresh interrupted", errorMessage, "danger"));
+
     if (!current) {
-      shell.appendChild(element("div", "ls-loading", "Reading LumiState publishers…"));
+      const loading = element("div", "ls-loading");
+      loading.setAttribute("aria-busy", "true");
+      loading.append(element("div", "ls-loading-orbit"), element("strong", "", "Reading scene publishers"), element("span", "", "Validating public, spoiler-safe snapshots…"));
+      shell.appendChild(loading);
       drawer.root.replaceChildren(shell);
       return;
     }
 
     const snapshot = current.snapshot;
-    const overview = element("div", "ls-overview");
-    const overviewMain = element("div", "ls-overview-main");
-    overviewMain.append(element("div", "ls-overview-label", "Active chat"), element("div", "ls-overview-value", compactId(snapshot.chatId)));
-    const pills = element("div", "ls-pills");
-    pills.append(
-      pill(snapshot.freshness, freshnessTone(snapshot.freshness)),
-      pill(`Revision ${snapshot.revision}`),
-      pill(`${snapshot.sources.filter((source) => source.status === "connected" || source.status === "stale").length}/${snapshot.sources.length} sources`),
-    );
-    overview.append(overviewMain, pills);
-    shell.appendChild(overview);
-
     if (!current.chatsPermission) {
-      const alert = element("div", "ls-alert error");
-      alert.append(element("div", "ls-alert-title", "Chats permission unavailable"), element("div", "ls-alert-body", "LumiState can display cached source status, but it cannot reliably resolve the active chat."));
-      shell.appendChild(alert);
+      shell.appendChild(renderNotice("Chats permission unavailable", "LumiState can show cached signal health, but it cannot reliably follow the active conversation.", "danger"));
     }
-
-    const sources = section("Publishers", snapshot.sources.length);
-    sources.grid.className = "ls-source-grid";
-    for (const source of snapshot.sources) {
-      const node = element("div", "ls-source");
-      const top = element("div", "ls-source-top");
-      top.append(element("div", "ls-source-name", source.label), pill(statusLabel(source.status), statusTone(source.status)));
-      node.append(top, element("div", "ls-source-endpoint", source.endpoint));
-      const meta = source.revision == null ? relativeTime(source.updatedAt) : `Revision ${source.revision} · ${relativeTime(source.updatedAt)}`;
-      node.appendChild(element("div", "ls-source-meta", source.error ? `${meta} · ${source.error}` : meta));
-      sources.grid.appendChild(node);
-    }
-    shell.appendChild(sources.root);
 
     if (!snapshot.chatId) {
-      const empty = element("div", "ls-empty");
-      empty.append(element("div", "ls-empty-title", "Open a chat to assemble its scene"), element("div", "ls-empty-body", "LumiState remains idle on the home screen and never substitutes state from the last open chat."));
-      shell.appendChild(empty);
+      shell.appendChild(renderNoChat(current));
       drawer.root.replaceChildren(shell);
-      drawer.setBadge("");
+      drawer.setBadge(null);
       return;
     }
 
+    shell.append(renderSceneStage(current), renderSignalPath(current));
+
     if (snapshot.conflicts.length) {
-      const alert = element("div", "ls-alert");
-      alert.append(
-        element("div", "ls-alert-title", `${snapshot.conflicts.length} source conflict${snapshot.conflicts.length === 1 ? "" : "s"}`),
-        element("div", "ls-alert-body", snapshot.conflicts.map((conflict) => conflict.message).join(" ")),
+      const conflict = element("section", "ls-conflict-panel");
+      const intro = element("div", "ls-conflict-intro");
+      intro.append(element("span", "ls-conflict-mark", "≠"));
+      const introCopy = element("div", "ls-conflict-copy");
+      introCopy.append(
+        element("div", "ls-kicker", "Reconciliation needed"),
+        element("h2", "ls-conflict-title", `${snapshot.conflicts.length} source ${snapshot.conflicts.length === 1 ? "conflict" : "conflicts"}`),
+        element("p", "ls-conflict-description", "LumiState preserved every claim so you can see where publishers disagree."),
       );
-      shell.appendChild(alert);
+      intro.appendChild(introCopy);
+      const list = element("div", "ls-conflict-list");
+      for (const item of snapshot.conflicts) {
+        const row = element("div", "ls-conflict-row");
+        const copy = element("div", "ls-conflict-row-copy");
+        copy.append(element("strong", "", `${humanize(item.kind)} mismatch`), element("span", "", item.message));
+        const sources = element("div", "ls-conflict-sources");
+        for (const source of item.sourceExtensions) sources.appendChild(pill(sourceName(source), "warn"));
+        row.append(copy, sources);
+        list.appendChild(row);
+      }
+      conflict.append(intro, list);
+      shell.appendChild(conflict);
     }
 
-    const renderClaims = <T,>(title: string, claims: T[], factory: (claim: T) => HTMLElement): void => {
-      if (!claims.length) return;
-      const group = section(title, claims.length);
-      for (const claim of claims) group.grid.appendChild(factory(claim));
-      shell.appendChild(group.root);
-    };
-    renderClaims("Locations", snapshot.state.locations, locationCard);
-    renderClaims("Time", snapshot.state.times, timeCard);
-    renderClaims("Conditions", snapshot.state.conditions, conditionCard);
-    renderClaims("Cast", snapshot.state.cast, castCard);
-    renderClaims("Objects", snapshot.state.objects, objectCard);
-    renderClaims("Threads", snapshot.state.threads, threadCard);
+    renderClaims(current, shell);
 
-    const claimCount = snapshot.state.locations.length + snapshot.state.times.length + snapshot.state.conditions.length + snapshot.state.cast.length + snapshot.state.objects.length + snapshot.state.threads.length;
+    const claimCount = snapshot.state.locations.length
+      + snapshot.state.times.length
+      + snapshot.state.conditions.length
+      + snapshot.state.cast.length
+      + snapshot.state.objects.length
+      + snapshot.state.threads.length;
     if (!claimCount) {
-      const empty = element("div", "ls-empty");
-      empty.append(element("div", "ls-empty-title", "No shared scene claims yet"), element("div", "ls-empty-body", "The connected publishers have not produced state for this chat yet. LumiState will refresh automatically."));
+      const empty = element("section", "ls-inline-empty");
+      empty.append(element("strong", "", "The scene is connected and quiet"), element("p", "", "No source has published shared claims for this conversation yet. Scene Inspector will refresh automatically."));
       shell.appendChild(empty);
     }
 
     drawer.root.replaceChildren(shell);
-    drawer.setBadge(snapshot.conflicts.length ? "!" : snapshot.freshness === "stale" ? "Stale" : "");
+    drawer.setBadge(snapshot.conflicts.length ? "!" : snapshot.freshness === "stale" ? "Stale" : null);
   }
 
   cleanups.push(ctx.onBackendMessage((payload) => {
@@ -356,7 +593,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }));
   cleanups.push(drawer.onActivate(syncContext));
   for (const event of ["CHAT_SWITCHED", "CHAT_CHANGED"] as const) {
-    cleanups.push(ctx.events.on(event, () => setTimeout(syncContext, 0)));
+    cleanups.push(ctx.events.on(event, () => window.setTimeout(syncContext, 0)));
   }
   cleanups.push(ctx.events.on("PERMISSION_CHANGED", syncContext));
 
@@ -366,7 +603,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   return () => {
     while (cleanups.length) {
-      try { cleanups.pop()?.(); } catch { /* Best-effort cleanup. */ }
+      try {
+        cleanups.pop()?.();
+      } catch {
+        // Best-effort cleanup.
+      }
     }
     ctx.dom.cleanup();
   };
